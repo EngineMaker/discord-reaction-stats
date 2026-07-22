@@ -19,13 +19,15 @@ Discord ギルドのリアクションを「もらった数 / 付けた数」で
    - **`report`/`scan` とも実行時に `.env` 必須**（`package.json` の script は3本とも `--env-file-if-exists=.env`）。プールは末尾で `await db.end()`（閉じないとハングする）
    - 既存SQLite→Neon はワンショット移行スクリプト `scripts/migrate-to-neon.ts`（冪等、件数一致を自己検証）で実施済み。SQLite(`data.sqlite`) と `better-sqlite3` 依存はこの移行のためだけに残っている。**検証: 移行後 users=178/reactions=3819/messages=4392/scan_state=660 が SQLite と完全一致、Neon由来レポートが SQLite版と同一（tokisaba 合計605で先頭・EM住民20人・カットオフ・戻る全て一致、JSエラーなし）。**
    - **未処理**: `.env` の接続文字列を `sslmode=verify-full` に変えると pg の SSL 警告が消える（現状も verify-full 相当で動作、実害なし）。ユーザー操作
-3. **GitHub Actions で月イチ集計** — 🔶 **YAML作成済み・実運用はこれから (2026-07-23)。** `.github/workflows/monthly-scan.yml`。
+3. **GitHub Actions で月イチ集計** — ✅ **2026-07-23 疎通確認まで完了。** リポジトリ **https://github.com/EngineMaker/discord-reaction-stats** (パブリック)。Secrets 3つ登録済み。`workflow_dispatch` で `2026-07` を手動実行し **success で完走**（CIから Discord 認証・Neon 書き込み・再開スキップ全て正常。508対象/354スレッド、532リアクション記録）。`.github/workflows/monthly-scan.yml`。
+   - **今回の教訓**: `2026-07` 単独指定は `period_key="2026-07"` となり、前回の複合指定 (`"2026-06,2026-07"`) と別扱い → **新規スキャン扱いで660件を最初から走り約26分**（設計通り。速いスキップにはならない）。GitHub の **Webログ表示は途中で滞留する**ことがあり止まって見えるが、**Neon の実数が真実**。進捗は `scripts/progress.ts [YYYY-MM]` で確認する（今回これでハングでないと判定できた）
+   - レート制限は「遅いが正常に流れる」と実測。月イチ本番なら20〜30分でも `timeout-minutes:120` 内で問題なし
    - cron `0 22 1 * *`（UTC月初22時 = JST 2日7時。JST6時境界を確実に跨いだ後）。`workflow_dispatch` で手動実行も可（`period` 入力で過去分再集計、`fresh` で `--fresh`）
    - 集計期間は `scripts/target-period.ts` が「今のJST時刻が属する期間の前月」を出力（年またぎ対応済み・テスト済み）。手動入力があればそれを優先
    - Secrets 必要: `DISCORD_TOKEN` / `GUILD_ID` / `DATABASE_URL`。CI では `.env` が無く `--env-file-if-exists` はスキップされ、env は Secrets 経由で直接渡る（整合済み）
    - `concurrency` で直列化（scan_state の取り合い防止）、`timeout-minutes: 120`
    - **リポジトリはパブリック確定。** ③はスキャン(収集)のみ。レポート閲覧は④の役割
-   - **残**: (a) GitHubリポジトリ作成+push (b) Secrets 3つ登録 (c) `workflow_dispatch` で初回手動実行して疎通確認。**60日コミット無しでワークフロー自動無効化**に注意（`workflow_dispatch` があるので手動で叩けば復活）
+   - **注意**: **60日コミット無しでワークフロー自動無効化**（`workflow_dispatch` があるので手動で叩けば復活）。`.env` の `sslmode=verify-full` 化はまだ（実害なし・ユーザー操作）
 4. **Cloudflare Pages + Discord OAuth 閲覧ページ** — 最後。スコープ `identify`+`guilds` のみ。**対象サーバーのメンバー全員が閲覧可**（ロール絞りなし）。メンバー確認が済むまでデータを配信しないこと（サーバー側判定）。client secret とセッション署名鍵は Cloudflare の環境変数へ
 
 **却下した案**: CockroachDB（分散はこの規模で過剰）/ クエリ文字列パスワード（データが手元にある時点でザル）/ GitHub・Google 認証（メンバーの該当アカウントを把握できない）。
