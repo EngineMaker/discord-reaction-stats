@@ -4,52 +4,20 @@ Discord ギルドのリアクションを「もらった数 / 付けた数」で
 
 ## 現在の状況 (2026-07-23 時点)
 
-**クラウド移行①②③④すべて完了・本番稼働中。** https://reactions.emaker.dev/ でメンバー限定のレポート閲覧が動作。詳細は下の「クラウド移行」セクション。
+**クラウド移行①TypeScript化 ②Neon化 ③GitHub Actions月イチ集計 ④Cloudflare Pages/Discord OAuth閲覧ページ、すべて完了・本番稼働中。** https://reactions.emaker.dev/ でメンバー限定のレポート閲覧が動作。ロール取得・投稿数集計・フォーラム対応・合計タブ・合計32カットオフ・戻るボタン・合計デフォルトまで実装・検証済み。
 
-### ⚠ 未完了タスク（次セッションで最初にやる）
-**2026-07 の中途半端なデータを Neon から削除する。** 今日③の疎通確認で `period=2026-07` を月の途中(7/23)に手動スキャンしたため、7月分が中途半端に入っている。8/1 の月イチバッチが7月分を正しく取り直すので、**今ある7月分は消して 2026-06 だけにするのがユーザーの意向**。
-- 削除スクリプト `scripts/delete-period.ts` は**作成済み・未実行**。dry-run既定、`--commit` で実行
-- 手順: まず `node --env-file-if-exists=.env --import tsx scripts/delete-period.ts 2026-07`（件数確認）→ 問題なければ `... 2026-07 --commit`（削除。DATABASE_URL 使うのでユーザー実行）
-- **`scan_state` の `period_key='2026-07'` も必ず消す**（残すと8/1バッチが走査済みと誤判定してスキップする）。スクリプトは3テーブルまとめて消す設計になっている
-- users は期間に紐づかないので触らない
+移行の実装詳細・当時の判断根拠・検証結果は **[docs/cloud-migration.md](docs/cloud-migration.md)** にアーカイブしてある（日常作業では読まなくてよい）。日常で効いてくる要点だけ以下と「設計上の判断」に残す:
 
-### 現状のデータ
-2026-06 / 2026-07 を Neon に収集済み（7月分は上記の通り中途半端）。ロール取得・投稿数集計・フォーラム対応・合計タブ・合計32カットオフ・戻るボタン・合計デフォルトまで実装・検証済み。
+- **データストアは Neon (Postgres)。** 接続は `.env` の `DATABASE_URL`（コミット禁止・トークン同様）。`db.ts` は `pg.Pool`、`openDb` は非同期。トランザクションは自作 `inTransaction()` で**クライアントを固定**して張ること（プールの `query` は毎回別接続になりうる）。プールは末尾で `await db.end()`（閉じないとハングする）。
+- **実行は `tsx` 経由で `.ts` を直接。** `node --import tsx src/xxx.ts`。ビルド不要。型チェックは `npm run typecheck`（Node + Functions 両方）。
+- **HTML生成は `src/build-report.ts` の `buildReportHtml(db)` に集約**し CLI と Cloudflare Functions で共有。`report.ts` は薄い CLI ラッパ。DB引数は `Queryable` 最小IFで pg(CLI)/`@neondatabase/serverless`(Functions) 両対応。
+- **月イチ集計は GitHub Actions** (`.github/workflows/monthly-scan.yml`, cron `0 22 1 * *` = JST 2日7時)。前月を `scripts/target-period.ts` が算出。`workflow_dispatch` で過去分の手動再集計も可。Secrets: `DISCORD_TOKEN`/`GUILD_ID`/`DATABASE_URL`。**60日コミット無しでワークフロー自動無効化**（手動 dispatch で復活）。
+- **閲覧ページは `functions/` の Pages Functions**（Workers ランタイム）。Discord OAuth で**対象サーバーのメンバー確認が済むまでデータを一切配信しない**。ローカルは `.dev.vars` + `npm run dev`。
+- **保留中の小さな宿題（実害なし・ユーザー操作）**: `.env` を `sslmode=verify-full` にすると pg の SSL 警告が消える。
 
-### 次にやること: クラウド移行（順序厳守）
-2026-07-22 に設計確定。**この順で進める。同時に変えると問題の切り分けができなくなる。**
-
-1. **TypeScript 化** — ✅ **2026-07-23 完了。** src の5ファイルと test を `.ts` 化。`tsx` を devDependency に入れ、`node --import tsx src/xxx.ts` で実行（ビルド不要）。型チェックは `npm run typecheck` (= `tsc --noEmit`)。行の型は `db.ts` に集約 (`UserRow` 等) し `.all() as XxxRow[]` で受ける。`tsconfig` は今 `strict:false`（段階的に締める余地あり。次は strictNullChecks）。`report.ts` の HTML内埋め込みJS はテンプレート文字列のまま（型の恩恵薄いので触らない）。**検証: `npm test` 全項目パス / スナップDBからのレポート生成が旧版と同一（合計デフォルト・カットオフ・戻る・EM住民フィルタ全て動作、JSエラーなし）。ロジックは一切変えていない。**
-2. **Neon (Postgres) 化** — ✅ **2026-07-23 完了。** Neonプロジェクト名 `emaker` / DB名 `discord_reaction_stats`。接続情報は `.env` の `DATABASE_URL`（コミット禁止・トークン同様の扱い）。`db.ts` を `pg.Pool` に置換、`openDb` は非同期に。`scan.ts`/`report.ts` は `await`対応。要点:
-   - **`db.transaction()` は `pg` に無いので `inTransaction()` ヘルパを自作**（`db.connect()` で1本取り出し `BEGIN`〜`COMMIT`/`ROLLBACK`）。1バッチ=1トランザクションの取りこぼし防止は維持。**プールの `query` は毎回別接続になりうるので、トランザクションは必ずクライアントを固定すること**
-   - プレースホルダ `?` → `$1,$2...`、`INSERT OR IGNORE` → `ON CONFLICT ... DO NOTHING`、`ON CONFLICT DO UPDATE`/`excluded` はそのまま通る、`= 1` 比較も維持
-   - `message_ts` は `BIGINT`（Postgres の INTEGER は32bitで溢れる）。`COUNT(*)` は bigint=文字列で返るので `::int` キャストで数値化
-   - **`report`/`scan` とも実行時に `.env` 必須**（`package.json` の script は3本とも `--env-file-if-exists=.env`）。プールは末尾で `await db.end()`（閉じないとハングする）
-   - 既存SQLite→Neon はワンショット移行スクリプト `scripts/migrate-to-neon.ts`（冪等、件数一致を自己検証）で実施済み。SQLite(`data.sqlite`) と `better-sqlite3` 依存はこの移行のためだけに残っている。**検証: 移行後 users=178/reactions=3819/messages=4392/scan_state=660 が SQLite と完全一致、Neon由来レポートが SQLite版と同一（tokisaba 合計605で先頭・EM住民20人・カットオフ・戻る全て一致、JSエラーなし）。**
-   - **未処理**: `.env` の接続文字列を `sslmode=verify-full` に変えると pg の SSL 警告が消える（現状も verify-full 相当で動作、実害なし）。ユーザー操作
-3. **GitHub Actions で月イチ集計** — ✅ **2026-07-23 疎通確認まで完了。** リポジトリ **https://github.com/EngineMaker/discord-reaction-stats** (パブリック)。Secrets 3つ登録済み。`workflow_dispatch` で `2026-07` を手動実行し **success で完走**（CIから Discord 認証・Neon 書き込み・再開スキップ全て正常。508対象/354スレッド、532リアクション記録）。`.github/workflows/monthly-scan.yml`。
-   - **今回の教訓**: `2026-07` 単独指定は `period_key="2026-07"` となり、前回の複合指定 (`"2026-06,2026-07"`) と別扱い → **新規スキャン扱いで660件を最初から走り約26分**（設計通り。速いスキップにはならない）。GitHub の **Webログ表示は途中で滞留する**ことがあり止まって見えるが、**Neon の実数が真実**。進捗は `scripts/progress.ts [YYYY-MM]` で確認する（今回これでハングでないと判定できた）
-   - レート制限は「遅いが正常に流れる」と実測。月イチ本番なら20〜30分でも `timeout-minutes:120` 内で問題なし
-   - cron `0 22 1 * *`（UTC月初22時 = JST 2日7時。JST6時境界を確実に跨いだ後）。`workflow_dispatch` で手動実行も可（`period` 入力で過去分再集計、`fresh` で `--fresh`）
-   - 集計期間は `scripts/target-period.ts` が「今のJST時刻が属する期間の前月」を出力（年またぎ対応済み・テスト済み）。手動入力があればそれを優先
-   - Secrets 必要: `DISCORD_TOKEN` / `GUILD_ID` / `DATABASE_URL`。CI では `.env` が無く `--env-file-if-exists` はスキップされ、env は Secrets 経由で直接渡る（整合済み）
-   - `concurrency` で直列化（scan_state の取り合い防止）、`timeout-minutes: 120`
-   - **リポジトリはパブリック確定。** ③はスキャン(収集)のみ。レポート閲覧は④の役割
-   - **注意**: **60日コミット無しでワークフロー自動無効化**（`workflow_dispatch` があるので手動で叩けば復活）。`.env` の `sslmode=verify-full` 化はまだ（実害なし・ユーザー操作）
-4. **Cloudflare Pages + Discord OAuth 閲覧ページ** — 🔶 **コード実装+ローカル動作確認まで完了・本番デプロイはこれから (2026-07-23)。**
-   - `functions/` に Pages Functions: `index.ts`(/ セッション検証→レポート or ログイン画面) / `auth/login.ts`(Discordへ302, state発行) / `auth/callback.ts`(★核心: コード交換→**対象サーバーのメンバー確認**→署名Cookie発行) / `auth/logout.ts` / `_lib/session.ts`(HMAC-SHA256署名Cookie, crypto.subtle) / `_lib/discord.ts`(OAuth, identify+guilds)
-   - **メンバー確認が済むまでデータを一切配信しない**を実装（未ログイン `/` はログイン画面のみ、レポート本体マーカー0を確認済み）。スコープ `identify`+`guilds` のみ
-   - **HTML生成は `src/build-report.ts` の `buildReportHtml(db)` に切り出して CLI と共有**（HTMLテンプレートは旧 report.ts と1バイトも変えていないことを diff で確認済み）。`report.ts` は薄いCLIラッパに。DB引数は `Queryable` 最小IFで pg(CLI)/@neondatabase/serverless(Functions) 両対応
-   - Functions は Workers ランタイム: `@neondatabase/serverless` で Neon 接続（通常の pg TCP は Workers で不可）、`functions/tsconfig.json` で Workers 型チェック（`npm run typecheck` が Node+Functions 両方回す）
-   - ローカル: `.dev.vars`（`.env` + `SESSION_SECRET`、**gitignore済**）で `npm run dev`(= wrangler pages dev)。**Discord実ログイン→メンバー確認→レポート表示のフル通しがローカルで成功済み**
-   - Discord Developer Portal: 既存Botアプリに OAuth2 リダイレクトURI 2つ登録済み（`http://localhost:8788/auth/callback` と `https://reactions.emaker.dev/auth/callback`）
-   - **残**: (a) Cloudflare Pages プロジェクト作成+デプロイ (b) 本番の環境変数5つ登録（DATABASE_URL/DISCORD_CLIENT_ID/DISCORD_CLIENT_SECRET/GUILD_ID/**SESSION_SECRETは本番用に新規生成**推奨=会話ログに残った値を使わない) (c) `reactions.emaker.dev` をカスタムドメイン割当。`wrangler.jsonc` の compatibility_date は wrangler がサポートする過去日にすること（未来日で起動失敗した）
-
-**却下した案**: CockroachDB（分散はこの規模で過剰）/ クエリ文字列パスワード（データが手元にある時点でザル）/ GitHub・Google 認証（メンバーの該当アカウントを把握できない）。
-
-**ドメイン**: **`emaker.dev`**（EngineMaker の略）。このツールはシェアハウス EngineMaker 全体のものという位置づけ。Cloudflare Registrar で取得予定（`.dev`は直接取得可・原価・NS設定不要）。`.dev` はHTTPS必須だが Pages が証明書自動発行。閲覧ページは `reactions.emaker.dev` 等のサブドメインを想定。取得はユーザー操作なので代行不可。
-
-git はまだ未初期化。移行の前に `git init` しておくと、TypeScript化の差分が追える。
+### データ運用のメモ
+- 現状 Neon には **2026-06 のみ**（2026-07 の疎通確認データは 2026-07-23 に削除済み。8/1 の月イチバッチが正しく取り直す）。
+- **特定期間を消したいとき**は `scripts/delete-period.ts YYYY-MM`（dry-run既定、`--commit` で実行）。`reactions`/`messages`/`scan_state` を1トランザクションでまとめて消す。**`scan_state` を消し忘れると次のバッチが走査済みと誤判定してスキップする**ので注意（スクリプトは3テーブルまとめて消す設計）。users は期間に紐づかないので触らない。DATABASE_URL を使うのでユーザー実行。
 
 ## 設計上の判断（変更する前に読むこと）
 
@@ -62,7 +30,7 @@ git はまだ未初期化。移行の前に `git init` しておくと、TypeScr
 この方式の根本的な制約: **取り消されたリアクションは復元できない。** スキャン時点で残っているものしか見えない。この制約はユーザーに説明済みで、了解のうえで進めている。正確に追うには `messageReactionAdd`/`Remove` を購読する常駐 Bot が必要。その場合も既存の `reactions` テーブルにそのまま書けるので、レポート側は変更不要。
 
 ### EM住民ロールは 0 件でもランキングに載せる
-ユーザーの明示的な要件。対象ロール名は `src/report.ts` の `FOCUS_ROLE` 定数 (`'EM住民'`) 一箇所で定義している。ロールを増やしたくなったらここを配列化する。
+ユーザーの明示的な要件。対象ロール名は `src/build-report.ts` の `FOCUS_ROLE` 定数 (`'EM住民'`) 一箇所で定義している。ロールを増やしたくなったらここを配列化する。
 
 - ロールは **`scan` の冒頭で毎回 `guild.members.fetch()` して取り直す**。走査済みチャンネルが全部 skip される再実行でも必ず通るので、ロールの付け外しは次回スキャンで反映される
 - `users.roles` はロール**名**の JSON 配列。ID ではなく名前で持っているのは、レポート側が名前で絞り込むため
@@ -111,7 +79,7 @@ git はまだ未初期化。移行の前に `git init` しておくと、TypeScr
 詳細を開くときに `history.pushState`、`popstate` で戻す。**画面内の「← 一覧に戻る」も `history.back()` を呼ぶこと** — 直接 `detail = null` にすると履歴に詳細が残り、ブラウザの戻るで詳細に入り直してしまう。
 
 ### 自己リアクションを除外している
-自分の投稿に自分で付けた分 (`giver_id = receiver_id`) は数字を盛れてしまうので `src/report.ts` の SQL で除外。**ユーザーには伝えてあるが、明示的な要件ではなくこちらの判断。** 含めたいと言われたら WHERE 句から外す。
+自分の投稿に自分で付けた分 (`giver_id = receiver_id`) は数字を盛れてしまうので `src/build-report.ts` の SQL で除外。**ユーザーには伝えてあるが、明示的な要件ではなくこちらの判断。** 含めたいと言われたら WHERE 句から外す。
 
 ### キーキャップ絵文字は「誰が付けたか」を取得できない（API側の制約）
 `*️⃣` `0️⃣`〜`9️⃣` `#️⃣` のような、異体字セレクタ `U+FE0F` + `U+20E3` を含む合成絵文字は、Discord API の `reactions/{emoji}/users` が **400 Unknown Emoji (10014)** を返す。`reaction.count` は取れるが誰が付けたかは取得不能。**こちらのバグではないので直そうとしないこと。**
@@ -133,22 +101,25 @@ git はまだ未初期化。移行の前に `git init` しておくと、TypeScr
 **この再開ロジックは偽の Discord API に対してテスト済み**: 「1バッチごとにクラッシュ→再開」を繰り返した結果が無停止完走と完全一致すること、再実行時の API 呼び出しがゼロになることを確認した。ロジックを変更したら同等の検証をやり直すこと。
 
 ### スキーマ変更にはマイグレーションが必要
-`CREATE TABLE IF NOT EXISTS` は**既存テーブルには何も効かない**ので、列を足しても既存の `data.sqlite` は古いまま `no such column` で落ちる（実際に一度やらかした）。テーブル定義を変えたら `src/db.ts` の `migrate()` に処理を足すこと。冪等にすること。
+`src/db.ts` は `CREATE TABLE IF NOT EXISTS` でスキーマを用意しているが、これは**既存テーブルには何も効かない**。列を足しても既に Neon にあるテーブルは古いまま `column ... does not exist` で落ちる（旧 SQLite 版で一度やらかした教訓。Neon でも同じ）。テーブル定義を変えたら、`ALTER TABLE ... ADD COLUMN IF NOT EXISTS` 等の冪等なマイグレーションを Neon 側に別途当てること（新規作成前提のため v1/v2 のような履歴管理は持っていない）。
 
 ## 構成
 
 | ファイル | 役割 |
 |---|---|
 | `src/period.ts` | JST 6時始まりの月境界の計算。ロジックの心臓部 |
-| `src/db.ts` | SQLite スキーマ |
-| `src/scan.ts` | Discord 履歴を遡ってリアクションを収集 |
-| `src/report.ts` | 自己完結 HTML を生成 |
+| `src/db.ts` | Neon(Postgres) 接続とスキーマ (`pg.Pool`)、行の型定義 |
+| `src/scan.ts` | Discord 履歴を遡ってリアクション・投稿を収集 |
+| `src/build-report.ts` | 自己完結 HTML の生成本体（CLI と Cloudflare Functions で共有） |
+| `src/report.ts` | 上を呼んで `report.html` に書き出す薄い CLI ラッパ |
+| `functions/` | Cloudflare Pages Functions（Discord OAuth 閲覧ページ）。詳細は [docs/cloud-migration.md](docs/cloud-migration.md) |
+| `scripts/` | 運用スクリプト（`delete-period` / `progress` / `target-period` / `migrate-to-neon`） |
 
-`data.sqlite` と `report.html` は生成物で `.gitignore` 済み。
+`report.html` は生成物で `.gitignore` 済み。`data.sqlite` は旧 SQLite 版の名残（Neon への一回限りの移行用）。
 
 ## 検証方法
 
-実データなしで HTML を確認したいときは、合成データを SQLite に流し込んで `npm run report` すればよい。前回は Playwright でスクリーンショットを撮り、JS エラーなし・ドリルダウン動作・詳細画面の数字が一覧と一致することを確認した（Playwright は検証後にアンインストール済み。依存に残っていない）。
+実データなしで HTML を確認したいときは、合成データを Neon（使い捨ての別 DB / スキーマ推奨）に流し込んで `npm run report` すればよい。前回は Playwright でスクリーンショットを撮り、JS エラーなし・ドリルダウン動作・詳細画面の数字が一覧と一致することを確認した（Playwright は検証後にアンインストール済み。依存に残っていない）。**本番 Neon を検証用に汚さないこと** — 消し忘れると閲覧ページに出る。
 
 **HTML を変更したら、ソースを読むだけで済ませず実際にレンダリングして目視すること。**
 
@@ -156,8 +127,8 @@ git はまだ未初期化。移行の前に `git init` しておくと、TypeScr
 実 DB のコピーに架空のロールを差し込んで検証した際、`UPDATE users SET is_member = 1` を**全員に一括実行**してしまい、ロールを持たない実在ユーザーが現メンバー扱いになった。その状態のレポートをユーザーに見せてしまい、「EM住民でない人が0件で出ている」という**実在しないバグの報告をさせてしまった**。
 
 - 合成データは**必要な行にだけ**適用する。全行 UPDATE は影響範囲を見失う
-- **ユーザーに見せるレポートは必ず実 DB から生成すること**。検証用 DB の出力を成果物として見せない
-- 検証で `data.sqlite` を差し替えたら、**確認まで含めて必ず元に戻す**
+- **ユーザーに見せるレポートは必ず実 DB（本番 Neon）から生成すること**。検証用 DB の出力を成果物として見せない
+- 検証用に本番 Neon を書き換えたら、**確認まで含めて必ず元に戻す**（そもそも本番を触らず使い捨ての DB を使うのが安全）
 
 ## 実運用で踏んだエラー（再発時の手引き）
 
@@ -165,7 +136,7 @@ git はまだ未初期化。移行の前に `git init` しておくと、TypeScr
 |---|---|---|
 | `Unknown Guild (10004)` | Bot 未招待、または GUILD_ID が違う | `npm run whoami` で参加中サーバーを確認。サーバーIDは左端のサーバーアイコンを右クリックして取得（チャンネル名を右クリックするとチャンネルIDになる） |
 | `Unknown Emoji (10014)` | キーキャップ絵文字（上記） | 対処済み。走査は続行し末尾で報告される |
-| `no such column` | スキーマ変更にマイグレーション未対応 | 対処済み。`migrate()` に処理を追加すること |
+| `column ... does not exist` | スキーマ変更を Neon に反映していない | Neon 側に冪等な `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` を当てる（上「スキーマ変更にはマイグレーションが必要」参照） |
 
 ## ユーザーについて
 
