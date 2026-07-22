@@ -1,0 +1,62 @@
+name: 月イチ集計スキャン
+
+# 毎月1日 UTC 22:00 (= JST 2日 07:00) に前月分を集計する。
+# JST 6時始まりの月境界を確実に跨いだ後に走らせるため、月初の JST 朝にしている。
+# schedule は数分〜数十分遅延しうるが、月イチ集計なので実害はない。
+on:
+  schedule:
+    - cron: '0 22 1 * *'
+  # 手動実行。過去分の再集計や、schedule が遅延・失敗したときのリカバリに使う。
+  workflow_dispatch:
+    inputs:
+      period:
+        description: '集計する期間 (YYYY-MM)。空なら前月を自動で使う'
+        required: false
+        type: string
+      fresh:
+        description: '進捗をリセットして最初から走査する (--fresh)'
+        required: false
+        type: boolean
+        default: false
+
+# 同時に複数走ると scan_state を取り合うので直列化する。
+concurrency:
+  group: monthly-scan
+  cancel-in-progress: false
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    # 大量チャンネル/スレッドの走査は時間がかかる。GitHub Actions の上限は6時間だが、
+    # 万一ハングしても課金し続けないよう明示的に上限を切る。
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      # 集計対象の期間を決める。手動入力があればそれを、無ければ前月を使う。
+      - name: 集計期間を決定
+        id: period
+        run: |
+          if [ -n "${{ inputs.period }}" ]; then
+            echo "value=${{ inputs.period }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=$(node --import tsx scripts/target-period.ts)" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: スキャン実行
+        env:
+          DISCORD_TOKEN: ${{ secrets.DISCORD_TOKEN }}
+          GUILD_ID: ${{ secrets.GUILD_ID }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          # schedule 実行時 inputs.fresh は空。手動で true を選んだときだけ --fresh が付く。
+          FRESH_FLAG: ${{ inputs.fresh == true && '--fresh' || '' }}
+        run: |
+          echo "集計期間: ${{ steps.period.outputs.value }}"
+          node --import tsx src/scan.ts "${{ steps.period.outputs.value }}" $FRESH_FLAG

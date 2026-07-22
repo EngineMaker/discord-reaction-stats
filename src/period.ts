@@ -19,3 +19,11 @@ export function periodRange(key: string): { startMs: number; endMs: number } {
   const endMs = Date.UTC(y, m, 1, DAY_BOUNDARY_HOUR) - JST_OFFSET_MS;
   return { startMs, endMs };
 }
+
+/** "YYYY-MM" の1つ前の月キー。年またぎも扱う (2026-01 -> 2025-12) */
+export function previousPeriodKey(key: string): string {
+  const [y, m] = key.split('-').map(Number);
+  const py = m === 1 ? y - 1 : y;
+  const pm = m === 1 ? 12 : m - 1;
+  return `${py}-${String(pm).padStart(2, '0')}`;
+}
