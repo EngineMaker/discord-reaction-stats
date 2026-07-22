@@ -1,0 +1,22 @@
+{
+  "compilerOptions": {
+    // 実行は tsx / 本番ビルドは tsc。まずは緩めの strict:false で全ファイルを通し、
+    // 移行が済んでから段階的に締める（計画: strictNullChecks から先に有効化）。
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "lib": ["ES2022"],
+    "types": ["node"],
+
+    "strict": false,
+    "noImplicitAny": false,
+    "esModuleInterop": true,
+    "resolveJsonModule": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+
+    // 型チェック専用（実行は tsx、本番出力は別途 outDir 指定でビルド）
+    "noEmit": true
+  },
+  "include": ["src/**/*.ts", "test/**/*.ts"]
+}
