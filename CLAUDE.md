@@ -28,7 +28,14 @@ Discord ギルドのリアクションを「もらった数 / 付けた数」で
    - `concurrency` で直列化（scan_state の取り合い防止）、`timeout-minutes: 120`
    - **リポジトリはパブリック確定。** ③はスキャン(収集)のみ。レポート閲覧は④の役割
    - **注意**: **60日コミット無しでワークフロー自動無効化**（`workflow_dispatch` があるので手動で叩けば復活）。`.env` の `sslmode=verify-full` 化はまだ（実害なし・ユーザー操作）
-4. **Cloudflare Pages + Discord OAuth 閲覧ページ** — 最後。スコープ `identify`+`guilds` のみ。**対象サーバーのメンバー全員が閲覧可**（ロール絞りなし）。メンバー確認が済むまでデータを配信しないこと（サーバー側判定）。client secret とセッション署名鍵は Cloudflare の環境変数へ
+4. **Cloudflare Pages + Discord OAuth 閲覧ページ** — 🔶 **コード実装+ローカル動作確認まで完了・本番デプロイはこれから (2026-07-23)。**
+   - `functions/` に Pages Functions: `index.ts`(/ セッション検証→レポート or ログイン画面) / `auth/login.ts`(Discordへ302, state発行) / `auth/callback.ts`(★核心: コード交換→**対象サーバーのメンバー確認**→署名Cookie発行) / `auth/logout.ts` / `_lib/session.ts`(HMAC-SHA256署名Cookie, crypto.subtle) / `_lib/discord.ts`(OAuth, identify+guilds)
+   - **メンバー確認が済むまでデータを一切配信しない**を実装（未ログイン `/` はログイン画面のみ、レポート本体マーカー0を確認済み）。スコープ `identify`+`guilds` のみ
+   - **HTML生成は `src/build-report.ts` の `buildReportHtml(db)` に切り出して CLI と共有**（HTMLテンプレートは旧 report.ts と1バイトも変えていないことを diff で確認済み）。`report.ts` は薄いCLIラッパに。DB引数は `Queryable` 最小IFで pg(CLI)/@neondatabase/serverless(Functions) 両対応
+   - Functions は Workers ランタイム: `@neondatabase/serverless` で Neon 接続（通常の pg TCP は Workers で不可）、`functions/tsconfig.json` で Workers 型チェック（`npm run typecheck` が Node+Functions 両方回す）
+   - ローカル: `.dev.vars`（`.env` + `SESSION_SECRET`、**gitignore済**）で `npm run dev`(= wrangler pages dev)。**Discord実ログイン→メンバー確認→レポート表示のフル通しがローカルで成功済み**
+   - Discord Developer Portal: 既存Botアプリに OAuth2 リダイレクトURI 2つ登録済み（`http://localhost:8788/auth/callback` と `https://reactions.emaker.dev/auth/callback`）
+   - **残**: (a) Cloudflare Pages プロジェクト作成+デプロイ (b) 本番の環境変数5つ登録（DATABASE_URL/DISCORD_CLIENT_ID/DISCORD_CLIENT_SECRET/GUILD_ID/**SESSION_SECRETは本番用に新規生成**推奨=会話ログに残った値を使わない) (c) `reactions.emaker.dev` をカスタムドメイン割当。`wrangler.jsonc` の compatibility_date は wrangler がサポートする過去日にすること（未来日で起動失敗した）
 
 **却下した案**: CockroachDB（分散はこの規模で過剰）/ クエリ文字列パスワード（データが手元にある時点でザル）/ GitHub・Google 認証（メンバーの該当アカウントを把握できない）。
 

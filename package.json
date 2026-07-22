@@ -7,19 +7,22 @@
     "whoami": "node --env-file-if-exists=.env --import tsx src/whoami.ts",
     "scan": "node --env-file-if-exists=.env --import tsx src/scan.ts",
     "report": "node --env-file-if-exists=.env --import tsx src/report.ts",
-    "typecheck": "tsc --noEmit",
-    "test": "node --import tsx test/threads.test.ts"
+    "typecheck": "tsc --noEmit && tsc --noEmit -p functions/tsconfig.json",
+    "test": "node --import tsx test/threads.test.ts",
+    "dev": "wrangler pages dev"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "type": "module",
   "dependencies": {
+    "@neondatabase/serverless": "^1.1.0",
     "better-sqlite3": "^12.11.1",
     "discord.js": "^14.27.0",
     "pg": "^8.22.0"
   },
   "devDependencies": {
+    "@cloudflare/workers-types": "^5.20260722.1",
     "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^26.1.1",
     "@types/pg": "^8.20.0",

@@ -1,0 +1,10 @@
+{
+  // Cloudflare Pages の設定。閲覧ページ (Discord OAuth + レポート表示)。
+  // 静的アセットは持たず、全て functions/ の Pages Functions で動的生成する。
+  // ただし Pages は静的出力ディレクトリを要求するので、空の public/ を置いてある。
+  "name": "emaker-reactions",
+  "compatibility_date": "2025-01-01",
+  // Node 互換 API（buffer 等）を Functions で使えるようにする
+  "compatibility_flags": ["nodejs_compat"],
+  "pages_build_output_dir": "./public"
+}
