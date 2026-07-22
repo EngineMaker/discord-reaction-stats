@@ -6,7 +6,7 @@
   "scripts": {
     "whoami": "node --env-file-if-exists=.env --import tsx src/whoami.ts",
     "scan": "node --env-file-if-exists=.env --import tsx src/scan.ts",
-    "report": "node --import tsx src/report.ts",
+    "report": "node --env-file-if-exists=.env --import tsx src/report.ts",
     "typecheck": "tsc --noEmit",
     "test": "node --import tsx test/threads.test.ts"
   },
@@ -16,11 +16,13 @@
   "type": "module",
   "dependencies": {
     "better-sqlite3": "^12.11.1",
-    "discord.js": "^14.27.0"
+    "discord.js": "^14.27.0",
+    "pg": "^8.22.0"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^26.1.1",
+    "@types/pg": "^8.20.0",
     "tsx": "^4.23.1",
     "typescript": "^7.0.2"
   }

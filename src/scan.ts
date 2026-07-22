@@ -25,47 +25,73 @@ const windowStart = Math.min(...ranges.map((r) => r.startMs));
 const windowEnd = Math.max(...ranges.map((r) => r.endMs));
 const wanted = new Set(periods);
 
-const db = openDb(new URL('../data.sqlite', import.meta.url).pathname);
+const dbUrl = process.env.DATABASE_URL;
+if (!dbUrl) {
+  console.error('DATABASE_URL が未設定です (.env を確認)');
+  process.exit(1);
+}
+const db = await openDb(dbUrl);
+
+// 1つのトランザクション内で複数クエリを実行する。プールから1本のクライアントを
+// 取り出して BEGIN〜COMMIT で囲む。SQLite 版の db.transaction() に相当。
+// 途中で例外が出たら ROLLBACK して投げ直す（取りこぼし・二重計上を防ぐ核心）。
+async function inTransaction<T>(fn: (q: (sql: string, params?: unknown[]) => Promise<void>) => Promise<T>): Promise<T> {
+  const client = await db.connect();
+  try {
+    await client.query('BEGIN');
+    const q = async (sql: string, params?: unknown[]) => {
+      await client.query(sql, params);
+    };
+    const result = await fn(q);
+    await client.query('COMMIT');
+    return result;
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
+// SQL 文字列定数。pg では準備済みステートメントを名前付きオブジェクトで持たず、
+// SQL と $1,$2... プレースホルダを db.query(sql, params) に渡す。
+//
 // リアクション経由で見かけた人。ロール情報は持たないので既存の値を壊さないこと
 // （メンバー一覧側で入れた is_member / roles を上書きしない）。
-//
-// 表示名はサーバーのニックネームを優先したいが、ここで取れるのは User オブジェクトの
-// グローバル表示名だけ。メンバー一覧側 (upsertMember) の方が正確なので、
+// 表示名はサーバーのニックネームを優先したいが、ここで取れるのは User の
+// グローバル表示名だけ。メンバー一覧側 (UPSERT_MEMBER) の方が正確なので、
 // 一度でもメンバーとして記録された人の display_name は上書きしない。
-const upsertUser = db.prepare(
-  `INSERT INTO users (user_id, display_name, avatar_url, is_bot) VALUES (?, ?, ?, ?)
-   ON CONFLICT(user_id) DO UPDATE SET
+const UPSERT_USER =
+  `INSERT INTO users (user_id, display_name, avatar_url, is_bot) VALUES ($1, $2, $3, $4)
+   ON CONFLICT (user_id) DO UPDATE SET
      display_name = CASE WHEN users.is_member = 1 THEN users.display_name ELSE excluded.display_name END,
-     avatar_url = excluded.avatar_url`
-);
+     avatar_url = excluded.avatar_url`;
 // ギルドメンバー一覧から入れる方。こちらはロール情報まで持っている。
-const upsertMember = db.prepare(
-  `INSERT INTO users (user_id, display_name, avatar_url, is_bot, is_member, roles) VALUES (?, ?, ?, ?, 1, ?)
-   ON CONFLICT(user_id) DO UPDATE SET display_name = excluded.display_name,
+const UPSERT_MEMBER =
+  `INSERT INTO users (user_id, display_name, avatar_url, is_bot, is_member, roles) VALUES ($1, $2, $3, $4, 1, $5)
+   ON CONFLICT (user_id) DO UPDATE SET display_name = excluded.display_name,
      avatar_url = excluded.avatar_url, is_bot = excluded.is_bot,
-     is_member = 1, roles = excluded.roles`
-);
-const insertMessage = db.prepare(
-  `INSERT OR IGNORE INTO messages (message_id, channel_id, author_id, message_ts, period)
-   VALUES (?, ?, ?, ?, ?)`
-);
-const insertReaction = db.prepare(
-  `INSERT OR IGNORE INTO reactions
+     is_member = 1, roles = excluded.roles`;
+const INSERT_MESSAGE =
+  `INSERT INTO messages (message_id, channel_id, author_id, message_ts, period)
+   VALUES ($1, $2, $3, $4, $5) ON CONFLICT (message_id) DO NOTHING`;
+const INSERT_REACTION =
+  `INSERT INTO reactions
    (message_id, channel_id, emoji_key, emoji_label, emoji_url, giver_id, receiver_id, message_ts, period)
-   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
-);
+   VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+   ON CONFLICT (message_id, emoji_key, giver_id) DO NOTHING`;
+const SELECT_STATE =
+  'SELECT oldest_seen_id, completed FROM scan_state WHERE channel_id = $1 AND period_key = $2';
+const SAVE_STATE =
+  `INSERT INTO scan_state (channel_id, period_key, oldest_seen_id, completed) VALUES ($1, $2, $3, $4)
+   ON CONFLICT (channel_id, period_key) DO UPDATE SET
+     oldest_seen_id = excluded.oldest_seen_id, completed = excluded.completed`;
 
 // 進捗キー。同じ期間の組み合わせでのみ再開を有効にする。
 const periodKey = [...periods].sort().join(',');
-const getState = db.prepare('SELECT oldest_seen_id, completed FROM scan_state WHERE channel_id = ? AND period_key = ?');
-const saveState = db.prepare(
-  `INSERT INTO scan_state (channel_id, period_key, oldest_seen_id, completed) VALUES (?, ?, ?, ?)
-   ON CONFLICT(channel_id, period_key) DO UPDATE SET
-     oldest_seen_id = excluded.oldest_seen_id, completed = excluded.completed`
-);
 const isFresh = process.argv.includes('--fresh');
 if (isFresh) {
-  db.prepare('DELETE FROM scan_state WHERE period_key = ?').run(periodKey);
+  await db.query('DELETE FROM scan_state WHERE period_key = $1', [periodKey]);
   console.log('--fresh: 進捗をリセットして最初から走査します');
 }
 
@@ -92,23 +118,22 @@ client.once('clientReady', async () => {
   // メンバー一覧とロールを毎回取り直す。ロールの付け外しがあっても最新の状態で集計できる。
   // 走査済みチャンネルが全部 skip される再実行でも、ここは必ず通る。
   const members = await guild.members.fetch();
-  const syncMembers = db.transaction(() => {
+  await inTransaction(async (q) => {
     // 退会者を現メンバー扱いのまま残さない。リアクションの記録自体は消さない。
-    db.prepare('UPDATE users SET is_member = 0, roles = \'[]\'').run();
+    await q("UPDATE users SET is_member = 0, roles = '[]'");
     for (const m of members.values()) {
       const roles = m.roles.cache.filter((r) => r.name !== '@everyone').map((r) => r.name);
-      upsertMember.run(
+      await q(UPSERT_MEMBER, [
         m.id,
         // サーバー内のニックネームを最優先。無ければグローバル表示名 → ユーザー名。
-        // リアクション経由 (upsertUser) では nickname が取れないのでこちらが正となる。
+        // リアクション経由 (UPSERT_USER) では nickname が取れないのでこちらが正となる。
         m.nickname ?? m.user.globalName ?? m.user.username,
         m.user.displayAvatarURL(),
         m.user.bot ? 1 : 0,
-        JSON.stringify(roles)
-      );
+        JSON.stringify(roles),
+      ]);
     }
   });
-  syncMembers();
   console.log(`メンバー ${members.size}人のロールを取得しました`);
 
   const me = await guild.members.fetchMe();
@@ -183,7 +208,9 @@ client.once('clientReady', async () => {
 
   for (const channel of channels.values()) {
     // 権限は targets を組む時点で確認済み
-    const state = getState.get(channel.id, periodKey) as ScanStateRow | undefined;
+    const state = (await db.query(SELECT_STATE, [channel.id, periodKey])).rows[0] as
+      | ScanStateRow
+      | undefined;
     if (state?.completed) {
       console.log(`  ${label(channel)} ... 走査済み (スキップ)`);
       skipped++;
@@ -262,18 +289,22 @@ client.once('clientReady', async () => {
         }
       }
 
-      const commit = db.transaction(() => {
+      // バッチ分の書き込みとカーソル前進を同一トランザクションでコミットする。
+      // 途中で落ちても取りこぼし・二重計上のどちらも起きない状態を保つ核心部分。
+      await inTransaction(async (q) => {
         for (const [kind, ...vals] of pending) {
-          if (kind === 'user') upsertUser.run(...vals);
-          else if (kind === 'message') insertMessage.run(...vals);
-          else insertReaction.run(...vals);
+          if (kind === 'user') await q(UPSERT_USER, vals);
+          else if (kind === 'message') await q(INSERT_MESSAGE, vals);
+          else await q(INSERT_REACTION, vals);
         }
-        saveState.run(channel.id, periodKey, cursor, done ? 1 : 0);
+        await q(SAVE_STATE, [channel.id, periodKey, cursor, done ? 1 : 0]);
       });
-      commit();
 
       before = cursor;
-      if (batch.size < 100) { done = true; saveState.run(channel.id, periodKey, cursor, 1); }
+      if (batch.size < 100) {
+        done = true;
+        await db.query(SAVE_STATE, [channel.id, periodKey, cursor, 1]);
+      }
     }
 
     totalMessages += scanned;
@@ -299,7 +330,7 @@ client.once('clientReady', async () => {
     console.log('  集計から除外されています。');
   }
   await client.destroy();
-  db.close();
+  await db.end();
 });
 
 client.login(DISCORD_TOKEN);

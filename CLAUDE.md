@@ -12,7 +12,13 @@ Discord ギルドのリアクションを「もらった数 / 付けた数」で
 2026-07-22 に設計確定。**この順で進める。同時に変えると問題の切り分けができなくなる。**
 
 1. **TypeScript 化** — ✅ **2026-07-23 完了。** src の5ファイルと test を `.ts` 化。`tsx` を devDependency に入れ、`node --import tsx src/xxx.ts` で実行（ビルド不要）。型チェックは `npm run typecheck` (= `tsc --noEmit`)。行の型は `db.ts` に集約 (`UserRow` 等) し `.all() as XxxRow[]` で受ける。`tsconfig` は今 `strict:false`（段階的に締める余地あり。次は strictNullChecks）。`report.ts` の HTML内埋め込みJS はテンプレート文字列のまま（型の恩恵薄いので触らない）。**検証: `npm test` 全項目パス / スナップDBからのレポート生成が旧版と同一（合計デフォルト・カットオフ・戻る・EM住民フィルタ全て動作、JSエラーなし）。ロジックは一切変えていない。**
-2. **Neon (Postgres) 化** — 主作業は `INSERT OR IGNORE` → `ON CONFLICT DO NOTHING` の置換。`upsertMember` の `ON CONFLICT DO UPDATE` はほぼそのまま
+2. **Neon (Postgres) 化** — ✅ **2026-07-23 完了。** Neonプロジェクト名 `emaker` / DB名 `discord_reaction_stats`。接続情報は `.env` の `DATABASE_URL`（コミット禁止・トークン同様の扱い）。`db.ts` を `pg.Pool` に置換、`openDb` は非同期に。`scan.ts`/`report.ts` は `await`対応。要点:
+   - **`db.transaction()` は `pg` に無いので `inTransaction()` ヘルパを自作**（`db.connect()` で1本取り出し `BEGIN`〜`COMMIT`/`ROLLBACK`）。1バッチ=1トランザクションの取りこぼし防止は維持。**プールの `query` は毎回別接続になりうるので、トランザクションは必ずクライアントを固定すること**
+   - プレースホルダ `?` → `$1,$2...`、`INSERT OR IGNORE` → `ON CONFLICT ... DO NOTHING`、`ON CONFLICT DO UPDATE`/`excluded` はそのまま通る、`= 1` 比較も維持
+   - `message_ts` は `BIGINT`（Postgres の INTEGER は32bitで溢れる）。`COUNT(*)` は bigint=文字列で返るので `::int` キャストで数値化
+   - **`report`/`scan` とも実行時に `.env` 必須**（`package.json` の script は3本とも `--env-file-if-exists=.env`）。プールは末尾で `await db.end()`（閉じないとハングする）
+   - 既存SQLite→Neon はワンショット移行スクリプト `scripts/migrate-to-neon.ts`（冪等、件数一致を自己検証）で実施済み。SQLite(`data.sqlite`) と `better-sqlite3` 依存はこの移行のためだけに残っている。**検証: 移行後 users=178/reactions=3819/messages=4392/scan_state=660 が SQLite と完全一致、Neon由来レポートが SQLite版と同一（tokisaba 合計605で先頭・EM住民20人・カットオフ・戻る全て一致、JSエラーなし）。**
+   - **未処理**: `.env` の接続文字列を `sslmode=verify-full` に変えると pg の SSL 警告が消える（現状も verify-full 相当で動作、実害なし）。ユーザー操作
 3. **GitHub Actions で月イチ集計** — トークンは Secrets。cron は UTC（JST6時=UTC21時・前日）。schedule遅延あり / 60日コミット無しで自動無効化（`workflow_dispatch` 併記）/ 重いので1時間超なら `scan_state` で分割
 4. **Cloudflare Pages + Discord OAuth 閲覧ページ** — 最後。スコープ `identify`+`guilds` のみ。**対象サーバーのメンバー全員が閲覧可**（ロール絞りなし）。メンバー確認が済むまでデータを配信しないこと（サーバー側判定）。client secret とセッション署名鍵は Cloudflare の環境変数へ
 

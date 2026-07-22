@@ -1,7 +1,12 @@
 import { writeFileSync } from 'node:fs';
 import { openDb, type UserRow, type ReactionRow, type PostCountRow } from './db.js';
 
-const db = openDb(new URL('../data.sqlite', import.meta.url).pathname);
+const url = process.env.DATABASE_URL;
+if (!url) {
+  console.error('DATABASE_URL が未設定です (.env を確認)');
+  process.exit(1);
+}
+const db = await openDb(url);
 const includeBots = process.argv.includes('--include-bots');
 
 // 絞り込み対象のロール。リアクションが0件でもランキングに載せる。
@@ -9,8 +14,8 @@ const FOCUS_ROLE = 'EM住民';
 
 const botFilter = includeBots ? '' : `AND g.is_bot = 0 AND r.is_bot = 0`;
 
-const rows = db
-  .prepare(
+const rows = (
+  await db.query(
     `SELECT rx.period, rx.emoji_key, rx.emoji_label, rx.emoji_url,
             rx.giver_id, rx.receiver_id
      FROM reactions rx
@@ -18,29 +23,29 @@ const rows = db
      JOIN users r ON r.user_id = rx.receiver_id
      WHERE rx.giver_id != rx.receiver_id ${botFilter}`
   )
-  .all() as ReactionRow[];
+).rows as ReactionRow[];
 
 const users: Record<string, UserRow> = Object.fromEntries(
-  db
-    .prepare('SELECT user_id, display_name, avatar_url, is_bot, is_member, roles FROM users')
-    .all()
-    .map((u) => [(u as UserRow).user_id, u as UserRow])
+  (
+    await db.query('SELECT user_id, display_name, avatar_url, is_bot, is_member, roles FROM users')
+  ).rows.map((u) => [(u as UserRow).user_id, u as UserRow])
 );
 
 // 投稿数。リアクションと違い自己リアクション除外のような絞りは不要で、素直に数える。
 // messages が空（投稿数対応より前にスキャンした DB）の場合は投稿数の表示自体を出さない。
-const postRows = db
-  .prepare(
-    `SELECT m.period, m.author_id, COUNT(*) n FROM messages m
+// COUNT(*) は Postgres では bigint=文字列で返るので Number() で数値に直す。
+const postRows = (
+  await db.query(
+    `SELECT m.period, m.author_id, COUNT(*)::int n FROM messages m
      JOIN users u ON u.user_id = m.author_id
-     WHERE 1 = 1 ${includeBots ? '' : 'AND u.is_bot = 0'}
+     WHERE TRUE ${includeBots ? '' : 'AND u.is_bot = 0'}
      GROUP BY m.period, m.author_id`
   )
-  .all() as PostCountRow[];
+).rows as PostCountRow[];
 const hasPosts = postRows.length > 0;
 
 if (rows.length === 0) {
-  console.error('データがありません。先に scan.js を実行してください。');
+  console.error('データがありません。先に scan を実行してください。');
   process.exit(1);
 }
 
@@ -468,3 +473,6 @@ render();
 const out = new URL('../report.html', import.meta.url).pathname;
 writeFileSync(out, html);
 console.log(`出力: ${out} (${rows.length}件のリアクション)`);
+
+// プールを閉じないと接続が残ってプロセスが終わらない
+await db.end();

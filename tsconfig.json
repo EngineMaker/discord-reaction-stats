@@ -18,5 +18,5 @@
     // 型チェック専用（実行は tsx、本番出力は別途 outDir 指定でビルド）
     "noEmit": true
   },
-  "include": ["src/**/*.ts", "test/**/*.ts"]
+  "include": ["src/**/*.ts", "test/**/*.ts", "scripts/**/*.ts"]
 }
