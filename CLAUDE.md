@@ -8,12 +8,11 @@ Discord ギルドのリアクションを「もらった数 / 付けた数」で
 
 移行の実装詳細・当時の判断根拠・検証結果は **[docs/cloud-migration.md](docs/cloud-migration.md)** にアーカイブしてある（日常作業では読まなくてよい）。日常で効いてくる要点だけ以下と「設計上の判断」に残す:
 
-- **データストアは Neon (Postgres)。** 接続は `.env` の `DATABASE_URL`（コミット禁止・トークン同様）。`db.ts` は `pg.Pool`、`openDb` は非同期。トランザクションは自作 `inTransaction()` で**クライアントを固定**して張ること（プールの `query` は毎回別接続になりうる）。プールは末尾で `await db.end()`（閉じないとハングする）。
+- **データストアは Neon (Postgres)。** 接続は `.env` の `DATABASE_URL`（コミット禁止・トークン同様）。**クエリパラメータは `sslmode=verify-full`**（2026-09-01 設定済み）— `require` 等だと pg が「将来 libpq 準拠になり保証が弱まる」旨の警告を出すため、明示している。`db.ts` は `pg.Pool`、`openDb` は非同期。トランザクションは自作 `inTransaction()` で**クライアントを固定**して張ること（プールの `query` は毎回別接続になりうる）。プールは末尾で `await db.end()`（閉じないとハングする）。
 - **実行は `tsx` 経由で `.ts` を直接。** `node --import tsx src/xxx.ts`。ビルド不要。型チェックは `npm run typecheck`（Node + Functions 両方）。
 - **HTML生成は `src/build-report.ts` の `buildReportHtml(db)` に集約**し CLI と Cloudflare Functions で共有。`report.ts` は薄い CLI ラッパ。DB引数は `Queryable` 最小IFで pg(CLI)/`@neondatabase/serverless`(Functions) 両対応。
 - **月イチ集計は GitHub Actions** (`.github/workflows/monthly-scan.yml`, cron `0 0 1 * *` = JST 1日9時)。前月を `scripts/target-period.ts` が算出。`workflow_dispatch` で過去分の手動再集計も可。Secrets: `DISCORD_TOKEN`/`GUILD_ID`/`DATABASE_URL`。**60日コミット無しでワークフロー自動無効化**（手動 dispatch で復活）。
 - **閲覧ページは `functions/` の Pages Functions**（Workers ランタイム）。Discord OAuth で**対象サーバーのメンバー確認が済むまでデータを一切配信しない**。ローカルは `.dev.vars` + `npm run dev`。
-- **保留中の小さな宿題（実害なし・ユーザー操作）**: `.env` を `sslmode=verify-full` にすると pg の SSL 警告が消える。
 
 ### データ運用のメモ
 - Neon には **2026-06 以降の各月**が入る（月イチバッチが毎月1日 00:00 UTC = JST 1日 09:00 に前月分を追加）。
