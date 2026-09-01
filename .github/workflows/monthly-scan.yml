@@ -31,9 +31,9 @@ jobs:
     # 万一ハングしても課金し続けないよう明示的に上限を切る。
     timeout-minutes: 120
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: npm
