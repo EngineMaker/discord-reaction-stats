@@ -11,15 +11,15 @@ Discord ギルドのリアクションを「もらった数 / 付けた数」で
 - **データストアは Neon (Postgres)。** 接続は `.env` の `DATABASE_URL`（コミット禁止・トークン同様）。`db.ts` は `pg.Pool`、`openDb` は非同期。トランザクションは自作 `inTransaction()` で**クライアントを固定**して張ること（プールの `query` は毎回別接続になりうる）。プールは末尾で `await db.end()`（閉じないとハングする）。
 - **実行は `tsx` 経由で `.ts` を直接。** `node --import tsx src/xxx.ts`。ビルド不要。型チェックは `npm run typecheck`（Node + Functions 両方）。
 - **HTML生成は `src/build-report.ts` の `buildReportHtml(db)` に集約**し CLI と Cloudflare Functions で共有。`report.ts` は薄い CLI ラッパ。DB引数は `Queryable` 最小IFで pg(CLI)/`@neondatabase/serverless`(Functions) 両対応。
-- **月イチ集計は GitHub Actions** (`.github/workflows/monthly-scan.yml`, cron `0 22 1 * *` = JST 2日7時)。前月を `scripts/target-period.ts` が算出。`workflow_dispatch` で過去分の手動再集計も可。Secrets: `DISCORD_TOKEN`/`GUILD_ID`/`DATABASE_URL`。**60日コミット無しでワークフロー自動無効化**（手動 dispatch で復活）。
+- **月イチ集計は GitHub Actions** (`.github/workflows/monthly-scan.yml`, cron `0 0 1 * *` = JST 1日9時)。前月を `scripts/target-period.ts` が算出。`workflow_dispatch` で過去分の手動再集計も可。Secrets: `DISCORD_TOKEN`/`GUILD_ID`/`DATABASE_URL`。**60日コミット無しでワークフロー自動無効化**（手動 dispatch で復活）。
 - **閲覧ページは `functions/` の Pages Functions**（Workers ランタイム）。Discord OAuth で**対象サーバーのメンバー確認が済むまでデータを一切配信しない**。ローカルは `.dev.vars` + `npm run dev`。
 - **保留中の小さな宿題（実害なし・ユーザー操作）**: `.env` を `sslmode=verify-full` にすると pg の SSL 警告が消える。
 
 ### データ運用のメモ
-- Neon には **2026-06 以降の各月**が入る（月イチバッチが毎月1日 22:00 UTC = JST 2日 07:00 に前月分を追加）。
+- Neon には **2026-06 以降の各月**が入る（月イチバッチが毎月1日 00:00 UTC = JST 1日 09:00 に前月分を追加）。
   特定月の有無を確かめたいときは `scripts/progress.ts` を見ること。**ここに「今何月分がある」を書くとすぐ古くなる**
   — 実際 7月末まで「2026-06 のみ」と書いてあったせいで、8月分が未実行に見えて調査が発生した。
-- **月初は「前月分がまだ無い」のが正常。** cron は毎月1日 22:00 UTC なので、JST 2日朝までは前月分が入らない。
+- **月初は「前月分がまだ無い」のが正常。** cron は毎月1日 00:00 UTC なので、JST 1日 9時までは前月分が入らない。
   待たずに入れたいときは `gh workflow run monthly-scan.yml -f period=YYYY-MM`（重複実行しても `INSERT OR IGNORE` と `scan_state` で害はない）。
 - **特定期間を消したいとき**は `scripts/delete-period.ts YYYY-MM`（dry-run既定、`--commit` で実行）。`reactions`/`messages`/`scan_state` を1トランザクションでまとめて消す。**`scan_state` を消し忘れると次のバッチが走査済みと誤判定してスキップする**ので注意（スクリプトは3テーブルまとめて消す設計）。users は期間に紐づかないので触らない。DATABASE_URL を使うのでユーザー実行。
 
