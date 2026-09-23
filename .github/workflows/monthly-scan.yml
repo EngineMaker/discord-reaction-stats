@@ -63,3 +63,40 @@ jobs:
         run: |
           echo "集計期間: ${{ steps.period.outputs.value }}"
           node --import tsx src/scan.ts "${{ steps.period.outputs.value }}" $FRESH_FLAG
+
+  # 集計が落ちたら Discord に知らせる（本人メンション付き）。
+  # 月1回しか走らないので、気付かないとその月の集計が黙って飛ぶ。
+  # timeout-minutes 超過も failure() に含まれる。
+  notify-failure:
+    runs-on: ubuntu-latest
+    needs: [scan]
+    if: failure()
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: ./.github/actions/notify-discord
+        with:
+          webhook-url: ${{ secrets.DISCORD_ALERT_WEBHOOK_URL }}
+          user-id: ${{ vars.DISCORD_USER_ID }}
+          message: |
+            🚨 ${{ github.repository }}: ${{ github.workflow }} が失敗しました（その月の集計は入っていない）
+            再実行: gh workflow run monthly-scan.yml -f period=YYYY-MM
+            ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+  # 成功時も毎回知らせる（メンション無し = プッシュ通知は鳴らない）。
+  # - 失敗通知だけだと、手動再実行で復旧したのかが Discord 上で分からない
+  # - 月1回なのでうるさくない。逆に「今月の ✅ が来ない」ことで、schedule の
+  #   60日無活動による自動無効化など「そもそも走っていない」事態にも気付ける
+  notify-success:
+    runs-on: ubuntu-latest
+    needs: [scan]
+    if: success()
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: ./.github/actions/notify-discord
+        with:
+          webhook-url: ${{ secrets.DISCORD_ALERT_WEBHOOK_URL }}
+          message: |
+            ✅ ${{ github.repository }}: ${{ github.workflow }} が完了しました
+            ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}

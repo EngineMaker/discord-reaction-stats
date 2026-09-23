@@ -1,0 +1,46 @@
+name: Notify Discord
+description: 人の手が必要な事態を、ユーザー個人の Discord チャンネルに Webhook で知らせる
+
+# 月イチ集計は失敗しても GitHub の画面にしか出ず、気付かないとその月の集計が
+# 黙って飛ぶ（他リポジトリでは定期実行が半年に28回、無通知で失敗していた例がある）。
+# world-issue-tracker の同名 action と同じ形にしてある。
+#
+# 通知は mk-discord-bot を経由せず、Discord のチャンネル Webhook を直接叩く。
+# bot が止まっていても届くようにするため（通知経路が止まって気付かない、を繰り返さない）。
+#
+# Webhook URL はそれ自体が投稿の認証を兼ねるので、必ず Secrets から渡すこと。
+
+inputs:
+  webhook-url:
+    description: Discord のチャンネル Webhook URL（secrets.DISCORD_ALERT_WEBHOOK_URL）
+    required: true
+  message:
+    description: 本文（2000 文字まで）
+    required: true
+  user-id:
+    description: メンションする Discord ユーザー ID。空ならメンションしない（vars.DISCORD_USER_ID）
+    required: false
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - name: Post to Discord webhook
+      shell: bash
+      env:
+        WEBHOOK_URL: ${{ inputs.webhook-url }}
+        MESSAGE: ${{ inputs.message }}
+        USER_ID: ${{ inputs.user-id }}
+      run: |
+        if [ -z "$WEBHOOK_URL" ]; then
+          echo "::error::DISCORD_ALERT_WEBHOOK_URL が未設定のため通知できない"
+          exit 1
+        fi
+        # スマホにプッシュ通知を確実に飛ばすため、本人へのメンションを付ける。
+        # allowed_mentions で本人以外（@everyone 等）が本文から発火しないよう絞る。
+        payload=$(jq -n --arg msg "$MESSAGE" --arg uid "$USER_ID" '{
+          username: "CI alert",
+          content: (if $uid == "" then $msg else "<@\($uid)> \($msg)" end),
+          allowed_mentions: { parse: [], users: (if $uid == "" then [] else [$uid] end) }
+        }')
+        curl -fsS -X POST -H 'Content-Type: application/json' -d "$payload" "$WEBHOOK_URL"

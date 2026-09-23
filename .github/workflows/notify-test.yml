@@ -1,0 +1,22 @@
+name: Notify test
+
+# Discord 通知（.github/actions/notify-discord）が届くかを手で確かめる。
+# Webhook URL やユーザー ID を登録・変更したら、Actions 画面か
+# `gh workflow run notify-test.yml` で一度走らせる。
+on:
+  workflow_dispatch:
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    name: Send test notification
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: ./.github/actions/notify-discord
+        with:
+          webhook-url: ${{ secrets.DISCORD_ALERT_WEBHOOK_URL }}
+          user-id: ${{ vars.DISCORD_USER_ID }}
+          message: |
+            ✅ ${{ github.repository }}: 通知のテストです（届いていれば設定 OK）
+            ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
